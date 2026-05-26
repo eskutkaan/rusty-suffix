@@ -2,6 +2,24 @@ use crate::fasta::Sequence;
 use crate::index::SuffixArrayIndex;
 use anyhow::Result;
 use bio::alignment::distance::levenshtein;
+use rayon::prelude::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CigarOp {
+    Match,      // = (match)
+    Mismatch,   // X (mismatch)
+    Insertion,  // I (query has extra bp)
+    Deletion,   // D (reference has extra bp)
+    SoftClip,   // S (unaligned query bases)
+    HardClip,   // H (hard clipped bases)
+}
+
+#[derive(Debug, Clone)]
+pub struct AlignmentDetail {
+    pub operations: Vec<CigarOp>,
+    pub query_start_clipped: usize,
+    pub query_end_clipped: usize,
+}
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -11,6 +29,7 @@ pub struct SearchResult {
     pub matched_sequence: Vec<u8>,
     pub mismatches: usize,
     pub match_length: usize,
+    pub alignment: Option<AlignmentDetail>,
 }
 
 pub struct ApproximateSearcher<'a> {
@@ -33,43 +52,44 @@ impl<'a> ApproximateSearcher<'a> {
     }
 
     pub fn search_batch(&self, queries: &[Sequence]) -> Result<Vec<SearchResult>> {
-        let mut results = Vec::new();
+        let results: Result<Vec<Vec<SearchResult>>> = queries
+            .par_iter()
+            .map(|query| self.search_single(query))
+            .collect();
 
-        for query in queries {
-            let query_results = self.search_single(query)?;
-            results.extend(query_results);
-        }
-
-        Ok(results)
+        Ok(results?.into_iter().flatten().collect())
     }
 
     pub fn search_single(&self, query: &Sequence) -> Result<Vec<SearchResult>> {
-        let mut results = Vec::new();
         let query_seq = &query.sequence;
 
         // Generate seeds from the query
         let seeds = self.generate_seeds(query_seq);
 
-        let mut seed_matches = Vec::new();
+        // Find all seed matches
+        let seed_matches: Vec<_> = seeds
+            .iter()
+            .flat_map(|(seed_pos, seed)| {
+                let exact_matches = self.index.find_pattern(seed);
+                exact_matches
+                    .into_iter()
+                    .map(|ref_pos| (ref_pos, *seed_pos, seed.len()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
-        for (seed_pos, seed) in seeds.iter() {
-            let exact_matches = self.index.find_pattern(seed);
+        // Expand seeds with fuzzy matching (parallelized)
+        let results: Result<Vec<Option<SearchResult>>> = seed_matches
+            .par_iter()
+            .map(|(ref_pos, query_seed_pos, seed_len)| {
+                self.expand_seed(query, *ref_pos, *query_seed_pos, *seed_len)
+            })
+            .collect();
 
-            for ref_pos in exact_matches {
-                seed_matches.push((ref_pos, *seed_pos, seed.len()));
-            }
-        }
-
-        // Expand seeds with fuzzy matching
-        for (ref_pos, query_seed_pos, seed_len) in seed_matches {
-            if let Some(result) =
-                self.expand_seed(query, ref_pos, query_seed_pos, seed_len)?
-            {
-                results.push(result);
-            }
-        }
-
-        Ok(results)
+        Ok(results?
+            .into_iter()
+            .filter_map(|r| r)
+            .collect())
     }
 
     fn generate_seeds(&self, query: &[u8]) -> Vec<(usize, Vec<u8>)> {
@@ -133,6 +153,13 @@ impl<'a> ApproximateSearcher<'a> {
         let distance = levenshtein(matched_query, matched_ref) as usize;
 
         if distance <= self.mismatch_tolerance {
+            let operations = Self::compute_cigar_operations(matched_query, matched_ref);
+            let alignment = Some(AlignmentDetail {
+                operations,
+                query_start_clipped: final_query_start,
+                query_end_clipped: query_seq.len() - final_query_end,
+            });
+
             Ok(Some(SearchResult {
                 query_id: query.id.clone(),
                 query_sequence: query_seq.clone(),
@@ -140,6 +167,7 @@ impl<'a> ApproximateSearcher<'a> {
                 matched_sequence: matched_ref.to_vec(),
                 mismatches: distance,
                 match_length: final_query_end - final_query_start,
+                alignment,
             }))
         } else {
             Ok(None)
@@ -189,6 +217,43 @@ impl<'a> ApproximateSearcher<'a> {
         }
 
         Ok((query_pos, ref_pos))
+    }
+
+    fn compute_cigar_operations(
+        query: &[u8],
+        reference: &[u8],
+    ) -> Vec<CigarOp> {
+        let mut operations = Vec::new();
+
+        if query.is_empty() || reference.is_empty() {
+            return operations;
+        }
+
+        // Use simple character-by-character comparison
+        // For full alignment, we would use Smith-Waterman, but for suffix array search
+        // this provides fast approximate alignment operations
+        let min_len = query.len().min(reference.len());
+
+        for i in 0..min_len {
+            if query[i] == reference[i] {
+                operations.push(CigarOp::Match);
+            } else {
+                operations.push(CigarOp::Mismatch);
+            }
+        }
+
+        // Handle length differences
+        if query.len() > reference.len() {
+            for _ in reference.len()..query.len() {
+                operations.push(CigarOp::Insertion);
+            }
+        } else if reference.len() > query.len() {
+            for _ in query.len()..reference.len() {
+                operations.push(CigarOp::Deletion);
+            }
+        }
+
+        operations
     }
 }
 

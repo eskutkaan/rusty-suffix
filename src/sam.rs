@@ -1,4 +1,4 @@
-use crate::search::SearchResult;
+use crate::search::{SearchResult, CigarOp};
 use anyhow::Result;
 use std::fs::File;
 use std::io::Write;
@@ -40,7 +40,13 @@ impl SamWriter {
         let flag = 0; // Properly mapped (0)
         let pos = result.reference_position + 1; // Convert to 1-based
         let mapq = calculate_mapq(result.mismatches);
-        let cigar = format!("{}M", result.match_length);
+
+        // Generate CIGAR string from alignment operations or fallback to simple format
+        let cigar = if let Some(alignment) = &result.alignment {
+            build_cigar_string(&alignment.operations)
+        } else {
+            format!("{}M", result.match_length)
+        };
 
         // Get the matched portion of the query (use the match length from result)
         let query_seq = &result.query_sequence[..result.match_length.min(result.query_sequence.len())];
@@ -79,6 +85,41 @@ impl SamWriter {
     }
 }
 
+fn build_cigar_string(operations: &[CigarOp]) -> String {
+    if operations.is_empty() {
+        return String::new();
+    }
+
+    let mut cigar = String::new();
+    let mut current_op = operations[0];
+    let mut count = 1;
+
+    for &op in &operations[1..] {
+        if op == current_op {
+            count += 1;
+        } else {
+            cigar.push_str(&format!("{}{}", count, op_to_char(current_op)));
+            current_op = op;
+            count = 1;
+        }
+    }
+
+    // Add the last operation
+    cigar.push_str(&format!("{}{}", count, op_to_char(current_op)));
+    cigar
+}
+
+fn op_to_char(op: CigarOp) -> char {
+    match op {
+        CigarOp::Match => '=',
+        CigarOp::Mismatch => 'X',
+        CigarOp::Insertion => 'I',
+        CigarOp::Deletion => 'D',
+        CigarOp::SoftClip => 'S',
+        CigarOp::HardClip => 'H',
+    }
+}
+
 fn calculate_mapq(mismatches: usize) -> u8 {
     // MAPQ: mapping quality (0-60)
     // 60 for perfect matches, decrease based on mismatches
@@ -114,5 +155,25 @@ mod tests {
     fn test_alignment_score() {
         assert_eq!(calculate_alignment_score(0, 20), 20);
         assert_eq!(calculate_alignment_score(2, 20), 12);
+    }
+
+    #[test]
+    fn test_cigar_string_generation() {
+        let ops = vec![
+            CigarOp::Match, CigarOp::Match, CigarOp::Mismatch,
+            CigarOp::Match, CigarOp::Match
+        ];
+        let cigar = build_cigar_string(&ops);
+        assert_eq!(cigar, "2=1X2=");
+    }
+
+    #[test]
+    fn test_cigar_with_indels() {
+        let ops = vec![
+            CigarOp::Match, CigarOp::Match, CigarOp::Insertion,
+            CigarOp::Match, CigarOp::Deletion, CigarOp::Match
+        ];
+        let cigar = build_cigar_string(&ops);
+        assert_eq!(cigar, "2=1I1=1D1=");
     }
 }
