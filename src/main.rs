@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use rusty_suffix::{Config, SuffixArraySearcher, SamWriter};
+use rusty_suffix::{Config, SuffixArraySearcher, SamWriter, TableWriter};
 use std::time::Instant;
 
 fn main() -> Result<()> {
@@ -48,6 +48,16 @@ fn main() -> Result<()> {
         searcher.reference_length(),
     )?;
     writer.write_results(&results)?;
+
+    // Write results to table file if requested
+    if let Some(table_path) = &config.table_output {
+        let mut table_writer = TableWriter::new(
+            table_path,
+            searcher.reference_name(),
+        )?;
+        table_writer.write_results(&results)?;
+        log::info!("Table output written to: {}", table_path);
+    }
 
     // Print performance metrics
     let total_time = start.elapsed();

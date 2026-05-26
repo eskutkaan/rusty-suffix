@@ -33,6 +33,9 @@ pub struct Config {
     #[arg(long, help = "Load suffix array index from cache")]
     pub load_index: Option<String>,
 
+    #[arg(long = "table", help = "Output BLAST-like alignment table (TSV format)")]
+    pub table_output: Option<String>,
+
     #[arg(short = 'v', long, help = "Enable verbose logging")]
     pub verbose: bool,
 }
@@ -67,6 +70,7 @@ impl Default for Config {
             threads: None,
             cache_index: None,
             load_index: None,
+            table_output: None,
             verbose: false,
         }
     }

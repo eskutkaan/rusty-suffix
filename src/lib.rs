@@ -4,6 +4,7 @@ pub mod index;
 pub mod query;
 pub mod sam;
 pub mod search;
+pub mod table;
 
 pub use config::Config;
 pub use fasta::FastaReader;
@@ -11,6 +12,7 @@ pub use index::SuffixArrayIndex;
 pub use query::QueryBatch;
 pub use sam::SamWriter;
 pub use search::{ApproximateSearcher, CigarOp, AlignmentDetail};
+pub use table::TableWriter;
 
 use anyhow::Result;
 use std::path::Path;
