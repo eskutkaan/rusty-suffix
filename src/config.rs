@@ -1,5 +1,6 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use anyhow::Result;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[command(name = "rusty-suffix")]
@@ -34,6 +35,24 @@ pub struct Config {
 
     #[arg(short = 'v', long, help = "Enable verbose logging")]
     pub verbose: bool,
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<()> {
+        if self.batch_size == 0 {
+            anyhow::bail!("batch_size must be greater than 0");
+        }
+
+        if self.min_seed_length == 0 {
+            anyhow::bail!("min_seed_length must be greater than 0");
+        }
+
+        if self.mismatch_tolerance == 0 {
+            log::warn!("mismatch_tolerance is 0 - only perfect matches will be found");
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for Config {

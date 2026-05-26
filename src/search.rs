@@ -86,10 +86,16 @@ impl<'a> ApproximateSearcher<'a> {
             })
             .collect();
 
-        Ok(results?
+        let mut deduplicated = results?
             .into_iter()
             .filter_map(|r| r)
-            .collect())
+            .collect::<Vec<_>>();
+
+        // Deduplicate: keep only one result per reference position
+        deduplicated.sort_by_key(|r| r.reference_position);
+        deduplicated.dedup_by_key(|r| r.reference_position);
+
+        Ok(deduplicated)
     }
 
     fn generate_seeds(&self, query: &[u8]) -> Vec<(usize, Vec<u8>)> {
@@ -140,16 +146,16 @@ impl<'a> ApproximateSearcher<'a> {
             ref_end += 1;
         }
 
-        // Try to extend with fuzzy matching
-        let (final_query_end, final_ref_end) =
-            self.fuzzy_extend_right(query_seq, query_end, ref_seq, ref_end)?;
-        let (final_query_start, final_ref_start) =
-            self.fuzzy_extend_left(query_seq, query_start, ref_seq, ref_start)?;
+        // Try to extend with fuzzy matching, tracking total mismatches
+        let (final_query_end, final_ref_end, _) =
+            self.fuzzy_extend_right(query_seq, query_end, ref_seq, ref_end, 0)?;
+        let (final_query_start, final_ref_start, _) =
+            self.fuzzy_extend_left(query_seq, query_start, ref_seq, ref_start, 0)?;
 
         let matched_query = &query_seq[final_query_start..final_query_end];
         let matched_ref = &ref_seq[final_ref_start..final_ref_end];
 
-        // Calculate edit distance
+        // Calculate edit distance to verify alignment
         let distance = levenshtein(matched_query, matched_ref) as usize;
 
         if distance <= self.mismatch_tolerance {
@@ -180,9 +186,10 @@ impl<'a> ApproximateSearcher<'a> {
         mut query_pos: usize,
         reference: &[u8],
         mut ref_pos: usize,
-    ) -> Result<(usize, usize)> {
-        let mut mismatches = 0;
-        let extend_limit = self.mismatch_tolerance / 2;
+        current_mismatches: usize,
+    ) -> Result<(usize, usize, usize)> {
+        let mut mismatches = current_mismatches;
+        let extend_limit = self.mismatch_tolerance.saturating_sub(current_mismatches);
 
         while query_pos < query.len()
             && ref_pos < reference.len()
@@ -195,7 +202,7 @@ impl<'a> ApproximateSearcher<'a> {
             ref_pos += 1;
         }
 
-        Ok((query_pos, ref_pos))
+        Ok((query_pos, ref_pos, mismatches))
     }
 
     fn fuzzy_extend_left(
@@ -204,9 +211,10 @@ impl<'a> ApproximateSearcher<'a> {
         mut query_pos: usize,
         reference: &[u8],
         mut ref_pos: usize,
-    ) -> Result<(usize, usize)> {
-        let mut mismatches = 0;
-        let extend_limit = self.mismatch_tolerance / 2;
+        current_mismatches: usize,
+    ) -> Result<(usize, usize, usize)> {
+        let mut mismatches = current_mismatches;
+        let extend_limit = self.mismatch_tolerance.saturating_sub(current_mismatches);
 
         while query_pos > 0 && ref_pos > 0 && mismatches < extend_limit {
             if query[query_pos - 1] != reference[ref_pos - 1] {
@@ -216,7 +224,7 @@ impl<'a> ApproximateSearcher<'a> {
             ref_pos -= 1;
         }
 
-        Ok((query_pos, ref_pos))
+        Ok((query_pos, ref_pos, mismatches))
     }
 
     fn compute_cigar_operations(
@@ -225,35 +233,93 @@ impl<'a> ApproximateSearcher<'a> {
     ) -> Vec<CigarOp> {
         let mut operations = Vec::new();
 
-        if query.is_empty() || reference.is_empty() {
+        if query.is_empty() && reference.is_empty() {
+            return operations;
+        }
+        if query.is_empty() {
+            for _ in 0..reference.len() {
+                operations.push(CigarOp::Deletion);
+            }
+            return operations;
+        }
+        if reference.is_empty() {
+            for _ in 0..query.len() {
+                operations.push(CigarOp::Insertion);
+            }
             return operations;
         }
 
-        // Use simple character-by-character comparison
-        // For full alignment, we would use Smith-Waterman, but for suffix array search
-        // this provides fast approximate alignment operations
-        let min_len = query.len().min(reference.len());
+        // Use dynamic programming to compute edit operations
+        // This aligns with Levenshtein distance calculation
+        let m = query.len();
+        let n = reference.len();
 
-        for i in 0..min_len {
-            if query[i] == reference[i] {
-                operations.push(CigarOp::Match);
+        // Build DP table: [i][j] = (distance, last_op)
+        let mut dp = vec![vec![(usize::MAX, None); n + 1]; m + 1];
+
+        // Initialize first row and column
+        for j in 0..=n {
+            dp[0][j] = (j, if j > 0 { Some(CigarOp::Deletion) } else { None });
+        }
+        for i in 0..=m {
+            dp[i][0] = (i, if i > 0 { Some(CigarOp::Insertion) } else { None });
+        }
+
+        // Fill DP table
+        for i in 1..=m {
+            for j in 1..=n {
+                let cost = if query[i - 1] == reference[j - 1] { 0 } else { 1 };
+                let match_cost = dp[i - 1][j - 1].0 + cost;
+                let insert_cost = dp[i - 1][j].0 + 1;
+                let delete_cost = dp[i][j - 1].0 + 1;
+
+                let (min_cost, op) = if match_cost <= insert_cost && match_cost <= delete_cost {
+                    let op = if cost == 0 { CigarOp::Match } else { CigarOp::Mismatch };
+                    (match_cost, op)
+                } else if insert_cost <= delete_cost {
+                    (insert_cost, CigarOp::Insertion)
+                } else {
+                    (delete_cost, CigarOp::Deletion)
+                };
+
+                dp[i][j] = (min_cost, Some(op));
+            }
+        }
+
+        // Backtrack to get operations
+        let mut i = m;
+        let mut j = n;
+        let mut ops = Vec::new();
+
+        while i > 0 || j > 0 {
+            if i == 0 {
+                ops.push(CigarOp::Deletion);
+                j -= 1;
+            } else if j == 0 {
+                ops.push(CigarOp::Insertion);
+                i -= 1;
             } else {
-                operations.push(CigarOp::Mismatch);
+                let cost = if query[i - 1] == reference[j - 1] { 0 } else { 1 };
+                let match_cost = dp[i - 1][j - 1].0 + cost;
+                let insert_cost = dp[i - 1][j].0 + 1;
+                let delete_cost = dp[i][j - 1].0 + 1;
+
+                if match_cost <= insert_cost && match_cost <= delete_cost {
+                    ops.push(if cost == 0 { CigarOp::Match } else { CigarOp::Mismatch });
+                    i -= 1;
+                    j -= 1;
+                } else if insert_cost <= delete_cost {
+                    ops.push(CigarOp::Insertion);
+                    i -= 1;
+                } else {
+                    ops.push(CigarOp::Deletion);
+                    j -= 1;
+                }
             }
         }
 
-        // Handle length differences
-        if query.len() > reference.len() {
-            for _ in reference.len()..query.len() {
-                operations.push(CigarOp::Insertion);
-            }
-        } else if reference.len() > query.len() {
-            for _ in query.len()..reference.len() {
-                operations.push(CigarOp::Deletion);
-            }
-        }
-
-        operations
+        ops.reverse();
+        ops
     }
 }
 

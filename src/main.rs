@@ -6,6 +6,9 @@ use std::time::Instant;
 fn main() -> Result<()> {
     let config = Config::parse();
 
+    // Validate configuration parameters
+    config.validate()?;
+
     if config.verbose {
         env_logger::Builder::from_default_env()
             .filter_level(log::LevelFilter::Debug)

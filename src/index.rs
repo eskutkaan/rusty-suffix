@@ -20,14 +20,15 @@ pub struct CacheHeader {
 impl SuffixArrayIndex {
     pub fn build(reference_path: impl AsRef<Path>) -> Result<Self> {
         log::info!("Building suffix array index from reference genome");
-        let reference = fs::read(reference_path)
+        let raw_bytes = fs::read(reference_path)
             .context("Failed to read reference file")?;
 
-        // Convert to uppercase and remove newlines for genomics data
-        let reference: Vec<u8> = reference
-            .iter()
-            .filter(|&&b| b != b'\n' && b != b'\r')
-            .map(|&b| b.to_ascii_uppercase())
+        // Parse FASTA: skip headers (lines starting with '>') and remove newlines
+        let reference: Vec<u8> = raw_bytes
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty() && line[0] != b'>')
+            .flat_map(|line| line.iter().cloned())
+            .map(|b| b.to_ascii_uppercase())
             .collect();
 
         log::info!("Reference size: {} bytes", reference.len());
@@ -222,11 +223,12 @@ impl SuffixArrayIndex {
         let raw_reference = fs::read(reference_path)
             .context("Failed to read reference file")?;
 
-        // Clean the reference the same way as in build()
+        // Parse FASTA: skip headers (lines starting with '>') and remove newlines
         let reference: Vec<u8> = raw_reference
-            .iter()
-            .filter(|&&b| b != b'\n' && b != b'\r')
-            .map(|&b| b.to_ascii_uppercase())
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty() && line[0] != b'>')
+            .flat_map(|line| line.iter().cloned())
+            .map(|b| b.to_ascii_uppercase())
             .collect();
 
         let reference_hash = Self::compute_hash(&reference);
