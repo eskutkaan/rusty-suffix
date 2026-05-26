@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use rusty_suffix::{Config, SuffixArraySearcher, SamWriter, TableWriter};
+use rusty_suffix::{Config, SuffixArraySearcher, SamWriter, TableWriter, filter_top_alignments};
 use std::time::Instant;
 
 fn main() -> Result<()> {
@@ -40,6 +40,13 @@ fn main() -> Result<()> {
 
     log::info!("Search completed in {:?}", search_time);
     log::info!("Found {} matches", results.len());
+
+    // Filter to top N alignments per query if requested
+    let results = filter_top_alignments(results, config.max_alignments);
+
+    if let Some(max_n) = config.max_alignments {
+        log::info!("Filtered to top {} alignments per query: {} matches remain", max_n, results.len());
+    }
 
     // Write results to SAM file
     let mut writer = SamWriter::new(

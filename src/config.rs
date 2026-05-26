@@ -36,6 +36,9 @@ pub struct Config {
     #[arg(long = "table", help = "Output BLAST-like alignment table (TSV format)")]
     pub table_output: Option<String>,
 
+    #[arg(long, value_name = "N", help = "Limit to top N alignments per query (default: unlimited)")]
+    pub max_alignments: Option<usize>,
+
     #[arg(short = 'v', long, help = "Enable verbose logging")]
     pub verbose: bool,
 }
@@ -71,6 +74,7 @@ impl Default for Config {
             cache_index: None,
             load_index: None,
             table_output: None,
+            max_alignments: None,
             verbose: false,
         }
     }

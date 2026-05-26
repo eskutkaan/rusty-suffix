@@ -90,3 +90,54 @@ impl SuffixArraySearcher {
         self.reference_length
     }
 }
+
+pub fn filter_top_alignments(
+    results: Vec<search::SearchResult>,
+    max_per_query: Option<usize>,
+) -> Vec<search::SearchResult> {
+    match max_per_query {
+        None => results,
+        Some(max_n) if max_n == 0 => results,
+        Some(max_n) => {
+            use std::collections::HashMap;
+
+            // Group results by query_id
+            let mut grouped: HashMap<String, Vec<search::SearchResult>> = HashMap::new();
+            for result in results {
+                grouped.entry(result.query_id.clone()).or_insert_with(Vec::new).push(result);
+            }
+
+            // Sort each group by identity% (DESC), then mismatches (ASC), then keep top N
+            let mut filtered = Vec::new();
+            for (_, mut group) in grouped {
+                group.sort_by(|a, b| {
+                    // Calculate identity for each result
+                    let identity_a = if a.match_length > 0 {
+                        (a.match_length - a.mismatches) as f64 / a.match_length as f64
+                    } else {
+                        0.0
+                    };
+                    let identity_b = if b.match_length > 0 {
+                        (b.match_length - b.mismatches) as f64 / b.match_length as f64
+                    } else {
+                        0.0
+                    };
+
+                    // Primary sort: identity% descending
+                    match identity_b.partial_cmp(&identity_a) {
+                        Some(std::cmp::Ordering::Equal) | None => {
+                            // Tiebreaker: mismatches ascending
+                            a.mismatches.cmp(&b.mismatches)
+                        }
+                        Some(ord) => ord,
+                    }
+                });
+
+                // Keep top N
+                filtered.extend(group.into_iter().take(max_n));
+            }
+
+            filtered
+        }
+    }
+}
