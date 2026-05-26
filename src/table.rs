@@ -32,7 +32,7 @@ impl TableWriter {
     fn write_header(&mut self) -> Result<()> {
         writeln!(
             self.file,
-            "Query_ID\tQuery_Len\tRef_Name\tRef_Pos\tQuery_Start\tQuery_End\tRef_Start\tRef_End\tAlignment_Len\tIdentity%\tMismatches\tGap_Opens\tAlignment_Score\tQuery_Seq\tRef_Seq"
+            "Query_ID\tQuery_Len\tRef_Name\tRef_Pos\tQuery_Start\tQuery_End\tRef_Start\tRef_End\tAlignment_Len\tIdentity%\tMismatches\tGap_Opens\tAlignment_Score\tQuery_Seq\tRef_Seq\tAlignment_Visual"
         )?;
         Ok(())
     }
@@ -76,9 +76,12 @@ impl TableWriter {
         // Reference sequence
         let ref_seq = String::from_utf8_lossy(&result.matched_sequence);
 
+        // Generate ASCII alignment visualization
+        let alignment_visual = generate_alignment_ascii(&result.alignment, &query_seq, &ref_seq);
+
         writeln!(
             self.file,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}",
             result.query_id,
             query_len,
             self.reference_name,
@@ -93,10 +96,49 @@ impl TableWriter {
             gap_opens,
             alignment_score,
             query_seq,
-            ref_seq
+            ref_seq,
+            alignment_visual
         )?;
 
         Ok(())
+    }
+}
+
+fn generate_alignment_ascii(
+    alignment: &Option<crate::search::AlignmentDetail>,
+    query_seq: &str,
+    ref_seq: &str,
+) -> String {
+    match alignment {
+        None => String::new(),
+        Some(align) => {
+            let mut match_line = String::new();
+            let query_bytes = query_seq.as_bytes();
+            let ref_bytes = ref_seq.as_bytes();
+
+            // Build match line character by character
+            for (i, op) in align.operations.iter().enumerate() {
+                match op {
+                    CigarOp::Match => {
+                        if i < query_bytes.len() && i < ref_bytes.len() {
+                            if query_bytes[i] == ref_bytes[i] {
+                                match_line.push('=');
+                            } else {
+                                match_line.push('X');
+                            }
+                        }
+                    }
+                    CigarOp::Mismatch => match_line.push('X'),
+                    CigarOp::Insertion => match_line.push('-'),
+                    CigarOp::Deletion => match_line.push('-'),
+                    CigarOp::SoftClip => match_line.push('.'),
+                    CigarOp::HardClip => match_line.push('.'),
+                }
+            }
+
+            // Format as 3-line alignment with escaped newlines for TSV
+            format!("{}\\n{}\\n{}", query_seq, match_line, ref_seq)
+        }
     }
 }
 
