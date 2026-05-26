@@ -135,4 +135,3 @@ samtools view results.sam
 - Parallel query batch processing with rayon
 - Caching suffix arrays to disk for reuse
 - More detailed CIGAR strings with insertions/deletions
-- BAM output support
