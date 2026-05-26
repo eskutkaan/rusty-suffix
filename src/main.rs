@@ -1,8 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use rusty_suffix::{Config, SuffixArraySearcher};
-use std::fs::File;
-use std::io::Write;
+use rusty_suffix::{Config, SuffixArraySearcher, SamWriter};
 use std::time::Instant;
 
 fn main() -> Result<()> {
@@ -40,8 +38,13 @@ fn main() -> Result<()> {
     log::info!("Search completed in {:?}", search_time);
     log::info!("Found {} matches", results.len());
 
-    // Write results to file
-    write_results(&config.output, &results)?;
+    // Write results to SAM file
+    let mut writer = SamWriter::new(
+        &config.output,
+        searcher.reference_name(),
+        searcher.reference_length(),
+    )?;
+    writer.write_results(&results)?;
 
     // Print performance metrics
     let total_time = start.elapsed();
@@ -52,34 +55,7 @@ fn main() -> Result<()> {
     println!("Search time: {:?}", search_time);
     println!("Total time: {:?}", total_time);
     println!("Throughput: {:.2} matches/sec", throughput);
-    println!("Output file: {}", config.output);
-
-    Ok(())
-}
-
-fn write_results(filename: &str, results: &[rusty_suffix::search::SearchResult]) -> Result<()> {
-    let mut file = File::create(filename)?;
-
-    // Write header
-    writeln!(
-        file,
-        "query_id\tquery_len\tref_pos\tmatch_len\tmismatches\tmatched_seq"
-    )?;
-
-    // Write results
-    for result in results {
-        let matched_seq = String::from_utf8_lossy(&result.matched_sequence);
-        writeln!(
-            file,
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            result.query_id,
-            result.query_sequence.len(),
-            result.reference_position,
-            result.match_length,
-            result.mismatches,
-            matched_seq
-        )?;
-    }
+    println!("Output file: {} (SAM format)", config.output);
 
     Ok(())
 }
